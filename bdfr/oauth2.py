@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
 import configparser
 import logging
@@ -8,6 +9,7 @@ import socket
 from pathlib import Path
 
 import praw
+import praw.util.token_manager
 import requests
 
 from bdfr.exceptions import BulkDownloaderException, RedditAuthenticationError
@@ -16,27 +18,28 @@ logger = logging.getLogger(__name__)
 
 
 class OAuth2Authenticator:
-    def __init__(self, wanted_scopes: set[str], client_id: str, client_secret: str, user_agent: str) -> None:
-        self._check_scopes(wanted_scopes, user_agent)
+    def __init__(self, wanted_scopes: set[str], client_id: str, client_secret: str, user_agent: str = "obtain_refresh_token for BDFR"):
+        self._check_scopes(wanted_scopes)
         self.scopes = wanted_scopes
         self.client_id = client_id
         self.client_secret = client_secret
+        self.user_agent = user_agent
 
     @staticmethod
-    def _check_scopes(wanted_scopes: set[str], user_agent: str) -> None:
+    def _check_scopes(wanted_scopes: set[str]) -> None:
         try:
             response = requests.get(
-                "https://www.reddit.com/api/v1/scopes.json",
-                headers={"User-Agent": user_agent},
-                timeout=10,
+                "https://www.reddit.com/api/v1/scopes.json", headers={"User-Agent": "fetch-scopes test"}
             )
-        except TimeoutError:
-            raise BulkDownloaderException("Reached timeout fetching scopes")
-        known_scopes = [scope for scope, data in response.json().items()]
+            response.raise_for_status()
+            known_scopes = [scope for scope, data in response.json().items()]
+        except Exception:
+            logger.warning("Could not retrieve Reddit scope list for validation; skipping scope check")
+            return
         known_scopes.append("*")
         for scope in wanted_scopes:
             if scope not in known_scopes:
-                raise BulkDownloaderException(f"Scope {scope!r} is not known to reddit")
+                raise BulkDownloaderException(f"Scope {scope} is not known to reddit")
 
     @staticmethod
     def split_scopes(scopes: str) -> set[str]:
@@ -46,7 +49,7 @@ class OAuth2Authenticator:
     def retrieve_new_token(self) -> str:
         reddit = praw.Reddit(
             redirect_uri="http://localhost:7634",
-            user_agent="obtain_refresh_token for BDFR",
+            user_agent=self.user_agent,
             client_id=self.client_id,
             client_secret=self.client_secret,
         )
@@ -62,10 +65,10 @@ class OAuth2Authenticator:
 
         if state != params["state"]:
             self.send_message(client)
-            raise RedditAuthenticationError(f"State mismatch in OAuth2. Expected: {state} Received: {params['state']}")
+            raise RedditAuthenticationError(f'State mismatch in OAuth2. Expected: {state} Received: {params["state"]}')
         elif "error" in params:
             self.send_message(client)
-            raise RedditAuthenticationError(f"Error in OAuth2: {params['error']}")
+            raise RedditAuthenticationError(f'Error in OAuth2: {params["error"]}')
 
         self.send_message(client, "<script>alert('You can go back to terminal window now.')</script>")
         refresh_token = reddit.auth.authorize(params["code"])
@@ -86,14 +89,14 @@ class OAuth2Authenticator:
         return client
 
     @staticmethod
-    def send_message(client: socket.socket, message: str = "") -> None:
-        client.send(f"HTTP/1.1 200 OK\r\n\r\n{message}".encode())
+    def send_message(client: socket.socket, message: str = ""):
+        client.send(f"HTTP/1.1 200 OK\r\n\r\n{message}".encode("utf-8"))
         client.close()
 
 
-class OAuth2TokenManager(praw.reddit.BaseTokenManager):
+class OAuth2TokenManager(praw.util.token_manager.BaseTokenManager):
     def __init__(self, config: configparser.ConfigParser, config_location: Path) -> None:
-        super().__init__()
+        super(OAuth2TokenManager, self).__init__()
         self.config = config
         self.config_location = config_location
 
